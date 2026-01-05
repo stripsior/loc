@@ -714,6 +714,27 @@ export default function Home() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Source Badge */}
+      <motion.a
+        href="https://github.com/stripsior/loc"
+        target="_blank"
+        rel="noopener noreferrer"
+        initial={{ opacity: 0, x: 20 }}
+        animate={{ opacity: 1, x: 0 }}
+        transition={{ delay: 0.5 }}
+        className="fixed bottom-6 right-6 z-40 group"
+      >
+        <div className="flex items-center gap-2 rounded-full border bg-card/80 px-4 py-2 font-mono text-sm shadow-lg backdrop-blur-xl transition-all hover:bg-card hover:shadow-xl hover:scale-105">
+          <Github className="h-4 w-4 text-muted-foreground group-hover:text-[#e95268] transition-colors" />
+          <span className="text-muted-foreground">
+            Source available at{" "}
+            <span className="text-[#e95268] font-semibold group-hover:underline">
+              GitHub
+            </span>
+          </span>
+        </div>
+      </motion.a>
     </div>
   );
 }
