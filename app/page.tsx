@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import posthog from "posthog-js";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -102,6 +102,7 @@ export default function Home() {
   const [repoUrl, setRepoUrl] = useState("");
   const [branch, setBranch] = useState("");
   const [ignored, setIgnored] = useState("");
+  const queryClient = useQueryClient();
   const [submittedParams, setSubmittedParams] = useState<{
     source: string;
     repoUrl: string;
@@ -133,7 +134,7 @@ export default function Home() {
       submittedParams!.ignored
     ),
     enabled: !!submittedParams,
-    staleTime: 1000 * 60 * 60, // 1 hour
+    staleTime: 1000 * 60, // 1 minute
   });
 
   // Fetch GitHub metadata
@@ -141,7 +142,7 @@ export default function Home() {
     queryKey: ['github-metadata', submittedParams?.repoUrl],
     queryFn: () => fetchGitHubMetadata(submittedParams!.repoUrl),
     enabled: !!submittedParams && submittedParams.source === "github",
-    staleTime: 1000 * 60 * 60,
+    staleTime: 1000 * 60,
   });
 
   // Fetch GitHub branches
@@ -149,7 +150,7 @@ export default function Home() {
     queryKey: ['github-branches', submittedParams?.repoUrl],
     queryFn: () => fetchGitHubBranches(submittedParams!.repoUrl),
     enabled: !!submittedParams && submittedParams.source === "github",
-    staleTime: 1000 * 60 * 60,
+    staleTime: 1000 * 60,
   });
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -207,6 +208,25 @@ export default function Home() {
       });
     }
   }, [locError, submittedParams]);
+
+  // Cache synchronization for default branch
+  useEffect(() => {
+    if (locData && repoMetadata && submittedParams && submittedParams.source === "github") {
+      const currentBranch = submittedParams.branch;
+      const defaultBranch = repoMetadata.default_branch;
+
+      // If we have data for the default branch (either naturally or explicitly), 
+      // seed the other "alias" in the cache to avoid refetches.
+      if (currentBranch === "" || currentBranch === defaultBranch) {
+        const otherBranch = currentBranch === "" ? defaultBranch : "";
+        const otherKey = ['loc', submittedParams.source, submittedParams.repoUrl, otherBranch, submittedParams.ignored];
+
+        if (!queryClient.getQueryData(otherKey)) {
+          queryClient.setQueryData(otherKey, locData);
+        }
+      }
+    }
+  }, [locData, repoMetadata, submittedParams, queryClient]);
 
   const totalData = locData?.find((item) => item.language === "Total");
   const languageData = locData?.filter((item) => item.language !== "Total");
@@ -380,14 +400,14 @@ export default function Home() {
                 >
                   <Card>
                     <CardHeader>
-                      <div className="flex items-start justify-between">
-                        <div className="space-y-1">
-                          <CardTitle className="flex items-center gap-2">
-                            <Github className="h-5 w-5" />
-                            {repoMetadata.full_name}
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="space-y-1 min-w-0">
+                          <CardTitle className="flex items-center gap-2 truncate">
+                            <Github className="h-5 w-5 shrink-0" />
+                            <span className="truncate">{repoMetadata.full_name}</span>
                           </CardTitle>
                           {repoMetadata.description && (
-                            <CardDescription className="text-base">
+                            <CardDescription className="text-base line-clamp-2">
                               {repoMetadata.description}
                             </CardDescription>
                           )}
@@ -399,8 +419,8 @@ export default function Home() {
                         </Button>
                       </div>
                     </CardHeader>
-                    <CardContent>
-                      <div className="flex items-center justify-between gap-4">
+                    <CardContent className="grid gap-4 md:grid-cols-[1fr_auto] items-end">
+                      <div className="space-y-4 min-w-0">
                         <div className="flex flex-wrap items-center gap-4">
                           <div className="flex items-center gap-1.5 text-sm">
                             <Star className="h-4 w-4 text-yellow-500" />
@@ -425,49 +445,47 @@ export default function Home() {
                           )}
                         </div>
 
-                        {availableBranches.length > 0 && (
-                          <div className="flex items-center gap-2 shrink-0">
-                            <span className="text-sm text-muted-foreground">Branch:</span>
-                            <select
-                              value={currentBranch}
-                              onChange={(e) => handleBranchSwitch(e.target.value)}
-                              className="h-8 rounded-md border border-input bg-background px-2 py-0.5 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        {(repoMetadata.topics && repoMetadata.topics.length > 0) && (
+                          <div className="flex flex-wrap gap-2">
+                            {repoMetadata.topics.map((topic) => (
+                              <Badge key={topic} variant="secondary" className="text-xs">
+                                {topic}
+                              </Badge>
+                            ))}
+                          </div>
+                        )}
+
+                        {repoMetadata.homepage && (
+                          <div>
+                            <a
+                              href={repoMetadata.homepage}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="flex items-center gap-1 text-sm text-primary hover:underline"
                             >
-                              {availableBranches.map((b) => (
-                                <option key={b} value={b}>
-                                  {b}
-                                </option>
-                              ))}
-                            </select>
+                              <ExternalLink className="h-3 w-3" />
+                              {repoMetadata.homepage}
+                            </a>
                           </div>
                         )}
                       </div>
 
-                      {(repoMetadata.topics && repoMetadata.topics.length > 0) && (
-                        <div className="mt-4 flex flex-wrap gap-2">
-                          {repoMetadata.topics.map((topic) => (
-                            <Badge key={topic} variant="secondary" className="text-xs">
-                              {topic}
-                            </Badge>
-                          ))}
-                        </div>
-                      )}
-
-                      {repoMetadata.homepage && (
-                        <div className="mt-4">
-                          <a
-                            href={repoMetadata.homepage}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="flex items-center gap-1 text-sm text-primary hover:underline"
+                      {availableBranches.length > 0 && (
+                        <div className="flex items-center gap-2 shrink-0 min-w-0">
+                          <span className="text-sm text-muted-foreground shrink-0">Branch:</span>
+                          <select
+                            value={currentBranch}
+                            onChange={(e) => handleBranchSwitch(e.target.value)}
+                            className="h-8 max-w-[160px] rounded-md border border-input bg-background px-2 py-0.5 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                           >
-                            <ExternalLink className="h-3 w-3" />
-                            {repoMetadata.homepage}
-                          </a>
+                            {availableBranches.map((b) => (
+                              <option key={b} value={b}>
+                                {b}
+                              </option>
+                            ))}
+                          </select>
                         </div>
                       )}
-
-
                     </CardContent>
                   </Card>
                 </motion.div>
