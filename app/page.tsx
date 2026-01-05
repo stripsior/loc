@@ -45,6 +45,30 @@ interface Branch {
   name: string;
 }
 
+function parseGitHubUrl(input: string): string {
+  const trimmed = input.trim();
+
+  if (/^[a-zA-Z0-9_-]+\/[a-zA-Z0-9_.-]+$/.test(trimmed)) {
+    return trimmed;
+  }
+
+  try {
+    const url = new URL(trimmed);
+
+    if (url.hostname === 'github.com' || url.hostname === 'www.github.com') {
+      const pathname = url.pathname.replace(/^\/|\/$/g, '');
+
+      const parts = pathname.split('/');
+      if (parts.length >= 2) {
+        return `${parts[0]}/${parts[1]}`;
+      }
+    }
+  } catch (e) { }
+
+
+  return trimmed;
+}
+
 // Fetch functions
 async function fetchLocData(source: string, repoUrl: string, branch: string, ignored: string): Promise<LocData[]> {
   let url = `https://api.codetabs.com/v1/loc?${source}=${repoUrl}`;
@@ -320,7 +344,7 @@ export default function Home() {
                       <Input
                         placeholder="username/repo"
                         value={repoUrl}
-                        onChange={(e) => setRepoUrl(e.target.value)}
+                        onChange={(e) => setRepoUrl(parseGitHubUrl(e.target.value))}
                       />
                     </div>
 
