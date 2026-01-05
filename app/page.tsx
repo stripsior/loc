@@ -1,7 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
+import posthog from "posthog-js";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -9,7 +10,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Badge } from "@/components/ui/badge";
 import { Spinner } from "@/components/ui/spinner";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Search, AlertCircle, Github, RotateCcw, Star, GitFork, Eye, ExternalLink, TableIcon, PieChart } from "lucide-react";
+import { Search, AlertCircle, Github, RotateCcw, Star, GitFork, Eye, ExternalLink, TableIcon, PieChart, X, Info } from "lucide-react";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { motion, AnimatePresence } from "motion/react";
@@ -108,6 +109,19 @@ export default function Home() {
     ignored: string;
   } | null>(null);
   const [viewMode, setViewMode] = useState<"table" | "chart">("table");
+  const [showBanner, setShowBanner] = useState(false);
+
+  useEffect(() => {
+    const bannerDismissed = localStorage.getItem("loc_banner_dismissed");
+    if (!bannerDismissed) {
+      setShowBanner(true);
+    }
+  }, []);
+
+  const dismissBanner = () => {
+    setShowBanner(false);
+    localStorage.setItem("loc_banner_dismissed", "true");
+  };
 
   // Fetch LOC data
   const { data: locData, isLoading: isLoadingLoc, error: locError } = useQuery({
@@ -142,6 +156,12 @@ export default function Home() {
     e.preventDefault();
     if (repoUrl.trim()) {
       setSubmittedParams({ source, repoUrl, branch, ignored });
+      posthog.capture("loc_request_submitted", {
+        source,
+        repo_url: repoUrl,
+        branch: branch || "default",
+        ignored: ignored || "none",
+      });
     }
   };
 
@@ -156,8 +176,37 @@ export default function Home() {
     if (submittedParams) {
       setBranch(newBranch);
       setSubmittedParams({ ...submittedParams, branch: newBranch });
+      posthog.capture("loc_branch_switched", {
+        repo_url: submittedParams.repoUrl,
+        branch: newBranch,
+      });
     }
   };
+
+  // Track success
+  useEffect(() => {
+    if (locData && submittedParams) {
+      const total = locData.find(d => d.language === "Total");
+      posthog.capture("loc_request_success", {
+        repo_url: submittedParams.repoUrl,
+        branch: submittedParams.branch || "default",
+        total_lines: total?.lines || 0,
+        total_code: total?.linesOfCode || 0,
+        languages_count: locData.length - 1,
+      });
+    }
+  }, [locData, submittedParams]);
+
+  // Track error
+  useEffect(() => {
+    if (locError && submittedParams) {
+      posthog.capture("loc_request_error", {
+        repo_url: submittedParams.repoUrl,
+        branch: submittedParams.branch || "default",
+        error: (locError as Error).message,
+      });
+    }
+  }, [locError, submittedParams]);
 
   const totalData = locData?.find((item) => item.language === "Total");
   const languageData = locData?.filter((item) => item.language !== "Total");
@@ -227,7 +276,7 @@ export default function Home() {
                 <CardHeader>
                   <CardTitle>Lines of Code</CardTitle>
                   <CardDescription>
-                    Analyze any GitHub or GitLab repository
+                    Analyze any GitHub repository
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
@@ -238,7 +287,7 @@ export default function Home() {
                           <Github className="mr-2 h-4 w-4" />
                           GitHub
                         </ToggleGroupItem>
-                        <ToggleGroupItem value="gitlab" aria-label="GitLab">
+                        <ToggleGroupItem value="gitlab" aria-label="GitLab" disabled>
                           <svg className="mr-2 h-4 w-4" viewBox="0 0 24 24" fill="currentColor">
                             <path d="M23.6004 9.5927l-.0337-.0862L20.3.9814a.851.851 0 00-.3362-.405.8748.8748 0 00-.9997.0539.8748.8748 0 00-.29.4399l-2.2055 6.748H7.5375l-2.2057-6.748a.8573.8573 0 00-.29-.4412.8748.8748 0 00-.9997-.0537.8585.8585 0 00-.3362.4049L.5923 9.5015l-.0313.0825a6.1287 6.1287 0 002.0365 7.0594l.0037.0027.0113.0087 3.6288 2.7176 1.7928 1.3577 1.0918.8223a1.0085 1.0085 0 001.2164 0l1.0918-.8223 1.7928-1.3577 3.6401-2.7263.0037-.0027a6.1256 6.1256 0 002.0365-7.0594z" />
                           </svg>
@@ -351,56 +400,33 @@ export default function Home() {
                       </div>
                     </CardHeader>
                     <CardContent>
-                      <div className="flex flex-wrap items-center gap-4">
-                        <div className="flex items-center gap-1.5 text-sm">
-                          <Star className="h-4 w-4 text-yellow-500" />
-                          <span className="font-medium">{repoMetadata.stargazers_count.toLocaleString()}</span>
-                          <span className="text-muted-foreground">stars</span>
-                        </div>
-                        <div className="flex items-center gap-1.5 text-sm">
-                          <GitFork className="h-4 w-4" />
-                          <span className="font-medium">{repoMetadata.forks_count.toLocaleString()}</span>
-                          <span className="text-muted-foreground">forks</span>
-                        </div>
-                        <div className="flex items-center gap-1.5 text-sm">
-                          <Eye className="h-4 w-4" />
-                          <span className="font-medium">{repoMetadata.watchers_count.toLocaleString()}</span>
-                          <span className="text-muted-foreground">watchers</span>
-                        </div>
-                        {repoMetadata.language && (
-                          <Badge variant="secondary">{repoMetadata.language}</Badge>
-                        )}
-                        {repoMetadata.license && (
-                          <Badge variant="outline">{repoMetadata.license.name}</Badge>
-                        )}
-
-                      </div>
-                      {(repoMetadata.topics && repoMetadata.topics.length > 0) && (
-                        <div className="mt-4 flex flex-wrap gap-2">
-                          {repoMetadata.topics.map((topic) => (
-                            <Badge key={topic} variant="secondary" className="text-xs">
-                              {topic}
-                            </Badge>
-                          ))}
-                        </div>
-                      )}
-                      <div className="mt-4 flex items-end justify-between">
-                        <div>
-                          {repoMetadata.homepage && (
-                            <a
-                              href={repoMetadata.homepage}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="flex items-center gap-1 text-sm text-primary hover:underline"
-                            >
-                              <ExternalLink className="h-3 w-3" />
-                              {repoMetadata.homepage}
-                            </a>
+                      <div className="flex items-center justify-between gap-4">
+                        <div className="flex flex-wrap items-center gap-4">
+                          <div className="flex items-center gap-1.5 text-sm">
+                            <Star className="h-4 w-4 text-yellow-500" />
+                            <span className="font-medium">{repoMetadata.stargazers_count.toLocaleString()}</span>
+                            <span className="text-muted-foreground">stars</span>
+                          </div>
+                          <div className="flex items-center gap-1.5 text-sm">
+                            <GitFork className="h-4 w-4" />
+                            <span className="font-medium">{repoMetadata.forks_count.toLocaleString()}</span>
+                            <span className="text-muted-foreground">forks</span>
+                          </div>
+                          <div className="flex items-center gap-1.5 text-sm">
+                            <Eye className="h-4 w-4" />
+                            <span className="font-medium">{repoMetadata.watchers_count.toLocaleString()}</span>
+                            <span className="text-muted-foreground">watchers</span>
+                          </div>
+                          {repoMetadata.language && (
+                            <Badge variant="secondary">{repoMetadata.language}</Badge>
+                          )}
+                          {repoMetadata.license && (
+                            <Badge variant="outline">{repoMetadata.license.name}</Badge>
                           )}
                         </div>
 
                         {availableBranches.length > 0 && (
-                          <div className="flex items-center gap-2">
+                          <div className="flex items-center gap-2 shrink-0">
                             <span className="text-sm text-muted-foreground">Branch:</span>
                             <select
                               value={currentBranch}
@@ -416,6 +442,30 @@ export default function Home() {
                           </div>
                         )}
                       </div>
+
+                      {(repoMetadata.topics && repoMetadata.topics.length > 0) && (
+                        <div className="mt-4 flex flex-wrap gap-2">
+                          {repoMetadata.topics.map((topic) => (
+                            <Badge key={topic} variant="secondary" className="text-xs">
+                              {topic}
+                            </Badge>
+                          ))}
+                        </div>
+                      )}
+
+                      {repoMetadata.homepage && (
+                        <div className="mt-4">
+                          <a
+                            href={repoMetadata.homepage}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="flex items-center gap-1 text-sm text-primary hover:underline"
+                          >
+                            <ExternalLink className="h-3 w-3" />
+                            {repoMetadata.homepage}
+                          </a>
+                        </div>
+                      )}
 
 
                     </CardContent>
@@ -606,6 +656,46 @@ export default function Home() {
           )}
         </AnimatePresence>
       </div>
+
+      {/* Privacy & Credits Banner */}
+      <AnimatePresence>
+        {showBanner && (
+          <motion.div
+            initial={{ opacity: 0, y: 20, x: "-50%" }}
+            animate={{ opacity: 1, y: 0, x: "-50%" }}
+            exit={{ opacity: 0, scale: 0.95, x: "-50%" }}
+            className="fixed bottom-6 left-1/2 z-50 w-[calc(100%-2rem)] max-w-[550px]"
+          >
+            <div className="flex items-center gap-4 rounded-xl border bg-card p-4 font-mono shadow-2xl backdrop-blur-xl">
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground">
+                <Info className="h-5 w-5" />
+              </div>
+
+              <div className="flex-1 text-sm leading-snug">
+                <span className="font-bold text-foreground">Privacy & Data:</span>{" "}
+                <span className="text-muted-foreground">
+                  Anonymous usage data via PostHog. API by{" "}
+                  <a
+                    href="https://codetabs.com"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-[#e95268] hover:underline"
+                  >
+                    codetabs.com
+                  </a>.
+                </span>
+              </div>
+
+              <button
+                onClick={dismissBanner}
+                className="rounded-md bg-[#e95268]/20 px-3 py-1.5 text-xs font-bold uppercase tracking-wider text-[#e95268] transition-colors hover:bg-[#e95268]/30"
+              >
+                Dismiss
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
