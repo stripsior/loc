@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import posthog from "posthog-js";
 import { Button } from "@/components/ui/button";
@@ -10,40 +10,77 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Badge } from "@/components/ui/badge";
 import { Spinner } from "@/components/ui/spinner";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Search, AlertCircle, Github, RotateCcw, Star, GitFork, Eye, ExternalLink, TableIcon, PieChart, X, Info } from "lucide-react";
+import { Search, AlertCircle, Github, RotateCcw, Star, GitFork, ExternalLink, TableIcon, PieChart, Info, Key, ChevronDown, User, FileText, LogOut, LogIn, FileX, GitBranch } from "lucide-react";
+import { useSession, signIn, signOut, getAccessToken } from "@/lib/auth-client";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { motion, AnimatePresence } from "motion/react";
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
 import { Pie, PieChart as RechartsPieChart, Cell, ResponsiveContainer } from "recharts";
 
-interface LocData {
+interface LanguageStats {
   language: string;
-  files: number;
-  lines: number;
-  blanks: number;
-  comments: number;
-  linesOfCode: number;
+  fileCount: number;
+  totalLines: number;
+  codeLines: number;
+  commentLines: number;
+  blankLines: number;
+  bytes: number;
+  percentage: number;
 }
 
-interface RepoMetadata {
+interface AuthorStats {
   name: string;
-  full_name: string;
-  description: string | null;
-  stargazers_count: number;
-  forks_count: number;
-  watchers_count: number;
-  language: string | null;
-  license: { name: string } | null;
-  homepage: string | null;
-  html_url: string;
-  topics: string[];
-  default_branch: string;
+  email: string;
+  avatarUrl: string;
+  totalLines: number;
+  codeLines: number;
+  commentLines: number;
+  blankLines: number;
+  fileCount: number;
+  percentage: number;
 }
 
-interface Branch {
-  name: string;
+interface FileInfo {
+  path: string;
+  language: string;
+  totalLines: number;
+  codeLines: number;
+  commentLines: number;
+  blankLines: number;
+  size: number;
 }
+
+interface RepositoryInfo {
+  owner: string;
+  name: string;
+  fullName: string;
+  description: string;
+  stars: number;
+  forks: number;
+  size: number;
+  defaultBranch: string;
+  analyzedBranch: string;
+  branches: string[];
+  private: boolean;
+}
+
+interface AnalyzeResponse {
+  repository: RepositoryInfo;
+  summary: {
+    totalFiles: number;
+    totalLines: number;
+    totalCodeLines: number;
+    totalCommentLines: number;
+    totalBlankLines: number;
+    totalBytes: number;
+  };
+  languages: Record<string, LanguageStats>;
+  authors?: Record<string, AuthorStats>;
+  files: FileInfo[];
+  processingTime: string;
+}
+
 
 function parseGitHubUrl(input: string): string {
   const trimmed = input.trim();
@@ -70,12 +107,38 @@ function parseGitHubUrl(input: string): string {
 }
 
 // Fetch functions
-async function fetchLocData(source: string, repoUrl: string, branch: string, ignored: string): Promise<LocData[]> {
-  let url = `https://api.codetabs.com/v1/loc?${source}=${repoUrl}`;
-  if (branch) url += `&branch=${branch}`;
-  if (ignored) url += `&ignored=${ignored}`;
+async function analyzeRepository(
+  repoUrl: string,
+  branch?: string,
+  token?: string,
+  includeAuthors?: boolean,
+  filters?: {
+    excludeExtensions?: string[];
+    excludeDirectories?: string[];
+    minFileSize?: number;
+    maxFileSize?: number;
+    excludeGenerated?: boolean;
+    excludeVendored?: boolean;
+  }
+): Promise<AnalyzeResponse> {
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
 
-  const response = await fetch(url);
+  const requestBody: any = {
+    repository: repoUrl,
+  };
+
+  if (token) requestBody.token = token;
+  if (branch) requestBody.branch = branch;
+  if (includeAuthors) requestBody.includeAuthors = includeAuthors;
+  if (filters) requestBody.filters = filters;
+
+  const response = await fetch(`${apiUrl}/api/analyze`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(requestBody),
+  });
 
   if (!response.ok) {
     if (response.status === 429) {
@@ -83,58 +146,38 @@ async function fetchLocData(source: string, repoUrl: string, branch: string, ign
     }
     try {
       const errorData = await response.json();
-      const errorMessage = errorData.Error || errorData.error;
+      const errorMessage = errorData.error || errorData.message;
       if (errorMessage) throw new Error(errorMessage);
     } catch (e) {
-      if (e instanceof Error && e.message !== "Unexpected end of JSON input" && !e.message.includes("JSON")) {
+      if (e instanceof Error && !e.message.includes("JSON")) {
         throw e;
       }
       throw new Error("Failed to fetch data. Please check the repository URL and try again.");
     }
   }
 
-  let result;
-  try {
-    result = await response.json();
-  } catch (e) {
-    if (e instanceof Error) {
-      throw new Error(`Invalid response from API: ${e.message}`);
-    }
-    throw new Error("Invalid response from API. The data could not be parsed.");
-  }
-
-  const errorMessage = result.Error || result.error;
-  if (errorMessage) throw new Error(errorMessage);
-
-  return result;
-}
-
-async function fetchGitHubMetadata(repoUrl: string): Promise<RepoMetadata> {
-  const response = await fetch(`https://api.github.com/repos/${repoUrl}`);
-  if (!response.ok) throw new Error("Failed to fetch GitHub metadata");
   return response.json();
 }
 
-async function fetchGitHubBranches(repoUrl: string): Promise<Branch[]> {
-  const response = await fetch(`https://api.github.com/repos/${repoUrl}/branches`);
-  if (!response.ok) throw new Error("Failed to fetch branches");
-  return response.json();
-}
 
 export default function Home() {
-  const [source, setSource] = useState<"github" | "gitlab">("github");
   const [repoUrl, setRepoUrl] = useState("");
   const [branch, setBranch] = useState("");
-  const [ignored, setIgnored] = useState("");
+  const [excludeExtensions, setExcludeExtensions] = useState("");
   const queryClient = useQueryClient();
   const [submittedParams, setSubmittedParams] = useState<{
-    source: string;
     repoUrl: string;
     branch: string;
-    ignored: string;
+    excludeExtensions: string;
   } | null>(null);
   const [viewMode, setViewMode] = useState<"table" | "chart">("table");
+  const [breakdownType, setBreakdownType] = useState<"languages" | "files" | "authors">("languages");
+  const [showBreakdownDropdown, setShowBreakdownDropdown] = useState(false);
   const [showBanner, setShowBanner] = useState(false);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
+  // Get session for authentication
+  const { data: session, isPending: isSessionLoading } = useSession();
 
   useEffect(() => {
     const bannerDismissed = localStorage.getItem("loc_banner_dismissed");
@@ -143,49 +186,114 @@ export default function Home() {
     }
   }, []);
 
+  // Click outside handler for dropdown
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
+        setShowBreakdownDropdown(false);
+      }
+    };
+
+    if (showBreakdownDropdown) {
+      document.addEventListener("mousedown", handleClickOutside);
+      return () => document.removeEventListener("mousedown", handleClickOutside);
+    }
+  }, [showBreakdownDropdown]);
+
   const dismissBanner = () => {
     setShowBanner(false);
     localStorage.setItem("loc_banner_dismissed", "true");
   };
 
-  // Fetch LOC data
-  const { data: locData, isLoading: isLoadingLoc, error: locError } = useQuery({
-    queryKey: ['loc', submittedParams?.source, submittedParams?.repoUrl, submittedParams?.branch, submittedParams?.ignored],
-    queryFn: () => fetchLocData(
-      submittedParams!.source,
-      submittedParams!.repoUrl,
-      submittedParams!.branch,
-      submittedParams!.ignored
-    ),
+  const { data: analysisData, isLoading: isLoadingAnalysis, error: analysisError } = useQuery({
+    queryKey: ['analyze', submittedParams?.repoUrl, submittedParams?.branch, submittedParams?.excludeExtensions, session?.user?.id],
+    queryFn: async () => {
+      let authToken = undefined;
+
+      // If user is authenticated, get their GitHub access token
+      if (session?.user) {
+        try {
+          const tokenData = await getAccessToken({ providerId: "github" });
+          if (tokenData && 'data' in tokenData && tokenData.data?.accessToken) {
+            authToken = tokenData.data.accessToken;
+          }
+        } catch (error) {
+          console.error("Failed to get access token:", error);
+        }
+      }
+
+      const extensions = submittedParams?.excludeExtensions
+        ? submittedParams.excludeExtensions.split(',').map(s => s.trim().startsWith('.') ? s.trim() : `.${s.trim()}`)
+        : undefined;
+
+      return analyzeRepository(
+        submittedParams!.repoUrl,
+        submittedParams!.branch || undefined,
+        authToken,
+        false,
+        {
+          excludeGenerated: true,
+          excludeVendored: true,
+          excludeExtensions: extensions
+        }
+      );
+    },
     enabled: !!submittedParams,
     staleTime: 1000 * 60, // 1 minute
   });
 
-  // Fetch GitHub metadata
-  const { data: repoMetadata } = useQuery({
-    queryKey: ['github-metadata', submittedParams?.repoUrl],
-    queryFn: () => fetchGitHubMetadata(submittedParams!.repoUrl),
-    enabled: !!submittedParams && submittedParams.source === "github",
+  // Separate query for authors data
+  const { data: authorsData, isLoading: isLoadingAuthors, refetch: refetchAuthors } = useQuery({
+    queryKey: ['analyze-authors', submittedParams?.repoUrl, submittedParams?.branch, submittedParams?.excludeExtensions, session?.user?.id],
+    queryFn: async () => {
+      let authToken = undefined;
+
+      // If user is authenticated, get their GitHub access token
+      if (session?.user) {
+        try {
+          const tokenData = await getAccessToken({ providerId: "github" });
+          if (tokenData && 'data' in tokenData && tokenData.data?.accessToken) {
+            authToken = tokenData.data.accessToken;
+          }
+        } catch (error) {
+          console.error("Failed to get access token:", error);
+        }
+      }
+
+      const extensions = submittedParams?.excludeExtensions
+        ? submittedParams.excludeExtensions.split(',').map(s => s.trim().startsWith('.') ? s.trim() : `.${s.trim()}`)
+        : undefined;
+
+      return analyzeRepository(
+        submittedParams!.repoUrl,
+        submittedParams!.branch || undefined,
+        authToken,
+        true,
+        {
+          excludeGenerated: true,
+          excludeVendored: true,
+          excludeExtensions: extensions
+        }
+      );
+    },
+    enabled: false, // Don't fetch automatically
     staleTime: 1000 * 60,
   });
 
-  // Fetch GitHub branches
-  const { data: branches } = useQuery({
-    queryKey: ['github-branches', submittedParams?.repoUrl],
-    queryFn: () => fetchGitHubBranches(submittedParams!.repoUrl),
-    enabled: !!submittedParams && submittedParams.source === "github",
-    staleTime: 1000 * 60,
-  });
+
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (repoUrl.trim()) {
-      setSubmittedParams({ source, repoUrl, branch, ignored });
+      // Invalidate queries to allow resubmission with same values (e.g., after error)
+      queryClient.invalidateQueries({ queryKey: ['analyze'] });
+      queryClient.invalidateQueries({ queryKey: ['analyze-authors'] });
+
+      setSubmittedParams({ repoUrl, branch, excludeExtensions });
       posthog.capture("loc_request_submitted", {
-        source,
         repo_url: repoUrl,
         branch: branch || "default",
-        ignored: ignored || "none",
+        exclude_extensions: excludeExtensions,
       });
     }
   };
@@ -194,7 +302,7 @@ export default function Home() {
     setSubmittedParams(null);
     setRepoUrl("");
     setBranch("");
-    setIgnored("");
+    setExcludeExtensions("");
   };
 
   const handleBranchSwitch = (newBranch: string) => {
@@ -208,89 +316,130 @@ export default function Home() {
     }
   };
 
+  const handleBreakdownTypeChange = (type: "languages" | "files" | "authors") => {
+    setBreakdownType(type);
+    setShowBreakdownDropdown(false);
+
+    // If switching to authors and we don't have authors data yet, fetch it
+    if (type === "authors" && (!authorsData?.authors || Object.keys(authorsData.authors).length === 0)) {
+      refetchAuthors();
+    }
+
+    posthog.capture("breakdown_type_changed", {
+      breakdown_type: type,
+    });
+  };
+
   // Track success
   useEffect(() => {
-    if (locData && submittedParams) {
-      const total = locData.find(d => d.language === "Total");
+    if (analysisData && submittedParams) {
       posthog.capture("loc_request_success", {
         repo_url: submittedParams.repoUrl,
         branch: submittedParams.branch || "default",
-        total_lines: total?.lines || 0,
-        total_code: total?.linesOfCode || 0,
-        languages_count: locData.length - 1,
+        total_lines: analysisData.summary.totalLines,
+        total_code: analysisData.summary.totalCodeLines,
+        languages_count: Object.keys(analysisData.languages).length,
       });
     }
-  }, [locData, submittedParams]);
+  }, [analysisData, submittedParams]);
 
   // Track error
   useEffect(() => {
-    if (locError && submittedParams) {
+    if (analysisError && submittedParams) {
       posthog.capture("loc_request_error", {
         repo_url: submittedParams.repoUrl,
         branch: submittedParams.branch || "default",
-        error: (locError as Error).message,
+        error: (analysisError as Error).message,
       });
     }
-  }, [locError, submittedParams]);
+  }, [analysisError, submittedParams]);
 
-  // Cache synchronization for default branch
-  useEffect(() => {
-    if (locData && repoMetadata && submittedParams && submittedParams.source === "github") {
-      const currentBranch = submittedParams.branch;
-      const defaultBranch = repoMetadata.default_branch;
+  // Process language data for display
+  const languageData = analysisData ? Object.values(analysisData.languages) : null;
 
-      // If we have data for the default branch (either naturally or explicitly), 
-      // seed the other "alias" in the cache to avoid refetches.
-      if (currentBranch === "" || currentBranch === defaultBranch) {
-        const otherBranch = currentBranch === "" ? defaultBranch : "";
-        const otherKey = ['loc', submittedParams.source, submittedParams.repoUrl, otherBranch, submittedParams.ignored];
+  // Process chart data based on breakdown type: show top 5 and group rest as "Other"
+  const chartData = (() => {
+    if (breakdownType === "languages" && languageData) {
+      const sorted = [...languageData].sort((a, b) => b.codeLines - a.codeLines);
+      const top5 = sorted.slice(0, 5);
+      const rest = sorted.slice(5);
 
-        if (!queryClient.getQueryData(otherKey)) {
-          queryClient.setQueryData(otherKey, locData);
-        }
+      if (rest.length > 0) {
+        const otherTotal = rest.reduce((sum, item) => ({
+          language: "Other",
+          fileCount: sum.fileCount + item.fileCount,
+          totalLines: sum.totalLines + item.totalLines,
+          blankLines: sum.blankLines + item.blankLines,
+          commentLines: sum.commentLines + item.commentLines,
+          codeLines: sum.codeLines + item.codeLines,
+          bytes: sum.bytes + item.bytes,
+          percentage: sum.percentage + item.percentage,
+        }), {
+          language: "Other",
+          fileCount: 0,
+          totalLines: 0,
+          blankLines: 0,
+          commentLines: 0,
+          codeLines: 0,
+          bytes: 0,
+          percentage: 0,
+        });
+        return top5.map(item => ({ name: item.language, value: item.codeLines })).concat([{ name: "Other", value: otherTotal.codeLines }]);
       }
+      return top5.map(item => ({ name: item.language, value: item.codeLines }));
     }
-  }, [locData, repoMetadata, submittedParams, queryClient]);
 
-  const totalData = locData?.find((item) => item.language === "Total");
-  const languageData = locData?.filter((item) => item.language !== "Total");
+    if (breakdownType === "files" && analysisData?.files) {
+      const sorted = [...analysisData.files].sort((a, b) => b.codeLines - a.codeLines);
+      const top10 = sorted.slice(0, 10);
+      const rest = sorted.slice(10);
 
-  // Process language data for chart: show top 5 and group rest as "Other"
-  const chartData = languageData ? (() => {
-    const sorted = [...languageData].sort((a, b) => b.linesOfCode - a.linesOfCode);
-    const top5 = sorted.slice(0, 5);
-    const rest = sorted.slice(5);
+      const chartItems = top10.map(file => ({
+        name: file.path.split('/').pop() || file.path,
+        value: file.codeLines,
+        fullPath: file.path
+      }));
 
-    if (rest.length > 0) {
-      const otherTotal = rest.reduce((sum, item) => ({
-        language: "Other",
-        files: sum.files + item.files,
-        lines: sum.lines + item.lines,
-        blanks: sum.blanks + item.blanks,
-        comments: sum.comments + item.comments,
-        linesOfCode: sum.linesOfCode + item.linesOfCode,
-      }), {
-        language: "Other",
-        files: 0,
-        lines: 0,
-        blanks: 0,
-        comments: 0,
-        linesOfCode: 0,
-      });
-      return [...top5, otherTotal];
+      if (rest.length > 0) {
+        const otherTotal = rest.reduce((sum, file) => sum + file.codeLines, 0);
+        chartItems.push({ name: `Other (${rest.length} files)`, value: otherTotal, fullPath: "" });
+      }
+
+      return chartItems;
     }
-    return top5;
-  })() : null;
 
-  const availableBranches = branches?.map(b => b.name) || [];
-  const currentBranch = branch || repoMetadata?.default_branch || "";
+    if (breakdownType === "authors" && authorsData?.authors && Object.keys(authorsData.authors).length > 0) {
+      const authors = Object.values(authorsData.authors);
+      const sorted = [...authors].sort((a, b) => b.codeLines - a.codeLines);
+      const top5 = sorted.slice(0, 5);
+      const rest = sorted.slice(5);
+
+      const chartItems = top5.map(author => ({
+        name: author.name,
+        value: author.codeLines,
+        email: author.email
+      }));
+
+      if (rest.length > 0) {
+        const otherTotal = rest.reduce((sum, author) => sum + author.codeLines, 0);
+        chartItems.push({ name: `Other (${rest.length} authors)`, value: otherTotal, email: "" });
+      }
+
+      return chartItems;
+    }
+
+    return null;
+  })();
+
+  const availableBranches = analysisData?.repository.branches || [];
+  const currentBranch = branch || analysisData?.repository.defaultBranch || "";
 
   return (
     <div className="min-h-screen bg-background flex items-center justify-center p-4 md:p-8">
-      <div className={`mx-auto w-full max-w-5xl ${locData ? 'space-y-8' : ''}`}>
+      <div className={`mx-auto w-full max-w-5xl ${analysisData ? 'space-y-8' : ''}`}>
         <AnimatePresence mode="wait">
           {/* Loading Spinner */}
-          {isLoadingLoc && (
+          {isLoadingAnalysis && (
             <motion.div
               key="spinner"
               initial={{ opacity: 0, scale: 0.8 }}
@@ -307,7 +456,7 @@ export default function Home() {
           )}
 
           {/* Input Form */}
-          {!isLoadingLoc && !locData && (
+          {!isLoadingAnalysis && !analysisData && (
             <motion.div
               key="form"
               initial={{ opacity: 0, y: 20 }}
@@ -318,50 +467,87 @@ export default function Home() {
             >
               <Card className="w-full max-w-lg">
                 <CardHeader>
-                  <CardTitle>Lines of Code</CardTitle>
-                  <CardDescription>
-                    Analyze any GitHub repository
-                  </CardDescription>
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="flex-1">
+                      <CardTitle>Lines of Code</CardTitle>
+                      <CardDescription>
+                        Analyze any GitHub repository
+                      </CardDescription>
+                    </div>
+
+                    {/* Authentication UI */}
+                    <div className="flex items-center gap-2">
+                      {session?.user ? (
+                        <div className="flex items-center gap-2">
+                          <div className="flex items-center gap-2 px-3 py-1.5 rounded-md bg-muted">
+                            {session.user.image && (
+                              <img
+                                src={session.user.image}
+                                alt={session.user.name || "User"}
+                                className="h-6 w-6 rounded-full"
+                              />
+                            )}
+                            <span className="text-sm font-medium">{session.user.name}</span>
+                          </div>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => signOut()}
+                            title="Sign out"
+                          >
+                            <LogOut className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      ) : (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => signIn.social({ provider: "github", callbackURL: "/" })}
+                          disabled={isSessionLoading}
+                        >
+                          <Github className="mr-2 h-4 w-4" />
+                          Sign in with GitHub
+                        </Button>
+                      )}
+                    </div>
+                  </div>
                 </CardHeader>
                 <CardContent>
                   <form onSubmit={handleSubmit} className="space-y-4">
                     <div className="space-y-2">
-                      <ToggleGroup type="single" value={source} onValueChange={(value) => value && setSource(value as "github" | "gitlab")} className="justify-start">
-                        <ToggleGroupItem value="github" aria-label="GitHub">
-                          <Github className="mr-2 h-4 w-4" />
-                          GitHub
-                        </ToggleGroupItem>
-                        <ToggleGroupItem value="gitlab" aria-label="GitLab" disabled>
-                          <svg className="mr-2 h-4 w-4" viewBox="0 0 24 24" fill="currentColor">
-                            <path d="M23.6004 9.5927l-.0337-.0862L20.3.9814a.851.851 0 00-.3362-.405.8748.8748 0 00-.9997.0539.8748.8748 0 00-.29.4399l-2.2055 6.748H7.5375l-2.2057-6.748a.8573.8573 0 00-.29-.4412.8748.8748 0 00-.9997-.0537.8585.8585 0 00-.3362.4049L.5923 9.5015l-.0313.0825a6.1287 6.1287 0 002.0365 7.0594l.0037.0027.0113.0087 3.6288 2.7176 1.7928 1.3577 1.0918.8223a1.0085 1.0085 0 001.2164 0l1.0918-.8223 1.7928-1.3577 3.6401-2.7263.0037-.0027a6.1256 6.1256 0 002.0365-7.0594z" />
-                          </svg>
-                          GitLab
-                        </ToggleGroupItem>
-                      </ToggleGroup>
-                    </div>
-
-                    <div className="space-y-2">
-                      <Input
-                        placeholder="username/repo"
-                        value={repoUrl}
-                        onChange={(e) => setRepoUrl(parseGitHubUrl(e.target.value))}
-                      />
+                      <div className="relative">
+                        <Github className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                        <Input
+                          placeholder="username/repo or https://github.com/username/repo"
+                          value={repoUrl}
+                          onChange={(e) => setRepoUrl(parseGitHubUrl(e.target.value))}
+                          className="pl-9"
+                        />
+                      </div>
                     </div>
 
                     <div className="grid gap-4 sm:grid-cols-2">
                       <div className="space-y-2">
-                        <Input
-                          placeholder="Branch (optional)"
-                          value={branch}
-                          onChange={(e) => setBranch(e.target.value)}
-                        />
+                        <div className="relative">
+                          <GitBranch className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                          <Input
+                            placeholder="Branch (optional)"
+                            value={branch}
+                            onChange={(e) => setBranch(e.target.value)}
+                            className="pl-9"
+                          />
+                        </div>
                       </div>
                       <div className="space-y-2">
-                        <Input
-                          placeholder="Ignored (optional)"
-                          value={ignored}
-                          onChange={(e) => setIgnored(e.target.value)}
-                        />
+                        <div className="relative">
+                          <FileX className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                          <Input
+                            placeholder="Exclude extensions (e.g. .md, .txt)"
+                            value={excludeExtensions}
+                            onChange={(e) => setExcludeExtensions(e.target.value)}
+                            className="pl-9"
+                          />
+                        </div>
                       </div>
                     </div>
 
@@ -372,7 +558,7 @@ export default function Home() {
                   </form>
 
                   {/* Error Alert */}
-                  {locError && (
+                  {analysisError && (
                     <motion.div
                       initial={{ opacity: 0, height: 0 }}
                       animate={{ opacity: 1, height: "auto" }}
@@ -382,7 +568,7 @@ export default function Home() {
                     >
                       <Alert variant="destructive">
                         <AlertCircle className="h-4 w-4" />
-                        <AlertDescription>{(locError as Error).message}</AlertDescription>
+                        <AlertDescription>{(analysisError as Error).message}</AlertDescription>
                       </Alert>
                     </motion.div>
                   )}
@@ -392,7 +578,7 @@ export default function Home() {
           )}
 
           {/* Results */}
-          {!isLoadingLoc && totalData && (
+          {!isLoadingAnalysis && analysisData && (
             <motion.div
               key="results"
               initial={{ opacity: 0 }}
@@ -401,7 +587,7 @@ export default function Home() {
               transition={{ duration: 0.4 }}
               className="space-y-6"
             >
-              {/* Reset Button and Branch Switcher */}
+              {/* Reset Button */}
               <motion.div
                 initial={{ opacity: 0, y: -10 }}
                 animate={{ opacity: 1, y: 0 }}
@@ -412,108 +598,73 @@ export default function Home() {
                   <RotateCcw className="mr-2 h-4 w-4" />
                   Check another repository
                 </Button>
-
               </motion.div>
 
               {/* Repository Metadata */}
-              {repoMetadata && (
-                <motion.div
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: 0.15 }}
-                >
-                  <Card>
-                    <CardHeader>
-                      <div className="flex items-start justify-between gap-4">
-                        <div className="space-y-1 min-w-0">
-                          <CardTitle className="flex items-center gap-2 truncate">
-                            <Github className="h-5 w-5 shrink-0" />
-                            <span className="truncate">{repoMetadata.full_name}</span>
-                          </CardTitle>
-                          {repoMetadata.description && (
-                            <CardDescription className="text-base line-clamp-2">
-                              {repoMetadata.description}
-                            </CardDescription>
-                          )}
-                        </div>
-                        <Button variant="ghost" size="sm" asChild>
-                          <a href={repoMetadata.html_url} target="_blank" rel="noopener noreferrer">
-                            <ExternalLink className="h-4 w-4" />
-                          </a>
-                        </Button>
-                      </div>
-                    </CardHeader>
-                    <CardContent className="grid gap-4 md:grid-cols-[1fr_auto] items-end">
-                      <div className="space-y-4 min-w-0">
-                        <div className="flex flex-wrap items-center gap-4">
-                          <div className="flex items-center gap-1.5 text-sm">
-                            <Star className="h-4 w-4 text-yellow-500" />
-                            <span className="font-medium">{repoMetadata.stargazers_count.toLocaleString()}</span>
-                            <span className="text-muted-foreground">stars</span>
-                          </div>
-                          <div className="flex items-center gap-1.5 text-sm">
-                            <GitFork className="h-4 w-4" />
-                            <span className="font-medium">{repoMetadata.forks_count.toLocaleString()}</span>
-                            <span className="text-muted-foreground">forks</span>
-                          </div>
-                          <div className="flex items-center gap-1.5 text-sm">
-                            <Eye className="h-4 w-4" />
-                            <span className="font-medium">{repoMetadata.watchers_count.toLocaleString()}</span>
-                            <span className="text-muted-foreground">watchers</span>
-                          </div>
-                          {repoMetadata.language && (
-                            <Badge variant="secondary">{repoMetadata.language}</Badge>
-                          )}
-                          {repoMetadata.license && (
-                            <Badge variant="outline">{repoMetadata.license.name}</Badge>
-                          )}
-                        </div>
-
-                        {(repoMetadata.topics && repoMetadata.topics.length > 0) && (
-                          <div className="flex flex-wrap gap-2">
-                            {repoMetadata.topics.map((topic) => (
-                              <Badge key={topic} variant="secondary" className="text-xs">
-                                {topic}
-                              </Badge>
-                            ))}
-                          </div>
-                        )}
-
-                        {repoMetadata.homepage && (
-                          <div>
-                            <a
-                              href={repoMetadata.homepage}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="flex items-center gap-1 text-sm text-primary hover:underline"
-                            >
-                              <ExternalLink className="h-3 w-3" />
-                              {repoMetadata.homepage}
-                            </a>
-                          </div>
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.15 }}
+              >
+                <Card>
+                  <CardHeader>
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="space-y-1 min-w-0">
+                        <CardTitle className="flex items-center gap-2 truncate">
+                          <Github className="h-5 w-5 shrink-0" />
+                          <span className="truncate">{analysisData.repository.fullName}</span>
+                        </CardTitle>
+                        {analysisData.repository.description && (
+                          <CardDescription className="text-base line-clamp-2">
+                            {analysisData.repository.description}
+                          </CardDescription>
                         )}
                       </div>
-
-                      {availableBranches.length > 0 && (
-                        <div className="flex items-center gap-2 shrink-0 min-w-0">
-                          <span className="text-sm text-muted-foreground shrink-0">Branch:</span>
-                          <select
-                            value={currentBranch}
-                            onChange={(e) => handleBranchSwitch(e.target.value)}
-                            className="h-8 max-w-[160px] rounded-md border border-input bg-background px-2 py-0.5 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                          >
-                            {availableBranches.map((b) => (
-                              <option key={b} value={b}>
-                                {b}
-                              </option>
-                            ))}
-                          </select>
+                      <Button variant="ghost" size="sm" asChild>
+                        <a href={`https://github.com/${analysisData.repository.fullName}`} target="_blank" rel="noopener noreferrer">
+                          <ExternalLink className="h-4 w-4" />
+                        </a>
+                      </Button>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="grid gap-4 md:grid-cols-[1fr_auto] items-end">
+                    <div className="space-y-4 min-w-0">
+                      <div className="flex flex-wrap items-center gap-4">
+                        <div className="flex items-center gap-1.5 text-sm">
+                          <Star className="h-4 w-4 text-yellow-500" />
+                          <span className="font-medium">{analysisData.repository.stars.toLocaleString()}</span>
+                          <span className="text-muted-foreground">stars</span>
                         </div>
-                      )}
-                    </CardContent>
-                  </Card>
-                </motion.div>
-              )}
+                        <div className="flex items-center gap-1.5 text-sm">
+                          <GitFork className="h-4 w-4" />
+                          <span className="font-medium">{analysisData.repository.forks.toLocaleString()}</span>
+                          <span className="text-muted-foreground">forks</span>
+                        </div>
+                        {analysisData.repository.private && (
+                          <Badge variant="secondary">Private</Badge>
+                        )}
+                      </div>
+                    </div>
+
+                    {availableBranches.length > 0 && (
+                      <div className="flex items-center gap-2 shrink-0 min-w-0">
+                        <span className="text-sm text-muted-foreground shrink-0">Branch:</span>
+                        <select
+                          value={currentBranch}
+                          onChange={(e) => handleBranchSwitch(e.target.value)}
+                          className="h-8 max-w-[160px] rounded-md border border-input bg-background px-2 py-0.5 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        >
+                          {availableBranches.map((b) => (
+                            <option key={b} value={b}>
+                              {b}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              </motion.div>
 
               {/* Summary Cards */}
               <motion.div
@@ -523,10 +674,10 @@ export default function Home() {
                 className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4"
               >
                 {[
-                  { label: "Total Lines", value: totalData.lines },
-                  { label: "Lines of Code", value: totalData.linesOfCode },
-                  { label: "Files", value: totalData.files },
-                  { label: "Comments", value: totalData.comments },
+                  { label: "Total Lines", value: analysisData.summary.totalLines },
+                  { label: "Lines of Code", value: analysisData.summary.totalCodeLines },
+                  { label: "Files", value: analysisData.summary.totalFiles },
+                  { label: "Comments", value: analysisData.summary.totalCommentLines },
                 ].map((stat, index) => (
                   <motion.div
                     key={stat.label}
@@ -537,11 +688,7 @@ export default function Home() {
                     <Card>
                       <CardHeader className="pb-2">
                         <CardDescription>{stat.label}</CardDescription>
-                        {isLoadingLoc ? (
-                          <Skeleton className="h-9 w-24" />
-                        ) : (
-                          <CardTitle className="text-3xl">{stat.value.toLocaleString()}</CardTitle>
-                        )}
+                        <CardTitle className="text-3xl">{stat.value.toLocaleString()}</CardTitle>
                       </CardHeader>
                     </Card>
                   </motion.div>
@@ -558,10 +705,68 @@ export default function Home() {
                   <Card>
                     <CardHeader>
                       <div className="flex items-center justify-between">
-                        <div>
-                          <CardTitle>Language Breakdown</CardTitle>
-                          <CardDescription>
-                            Detailed statistics by programming language
+                        <div className="relative" ref={dropdownRef}>
+                          <button
+                            onClick={() => setShowBreakdownDropdown(!showBreakdownDropdown)}
+                            className="flex items-center gap-2 group cursor-pointer"
+                          >
+                            <CardTitle className="flex items-center gap-2">
+                              {breakdownType === "languages" && "Language Breakdown"}
+                              {breakdownType === "files" && "File Breakdown"}
+                              {breakdownType === "authors" && "Authors Breakdown"}
+                              <ChevronDown className="h-4 w-4 text-muted-foreground transition-transform group-hover:text-foreground" />
+                            </CardTitle>
+                          </button>
+
+                          <AnimatePresence>
+                            {showBreakdownDropdown && (
+                              <motion.div
+                                initial={{ opacity: 0, y: -10 }}
+                                animate={{ opacity: 1, y: 0 }}
+                                exit={{ opacity: 0, y: -10 }}
+                                transition={{ duration: 0.15 }}
+                                className="absolute top-full left-0 mt-2 w-56 rounded-md border bg-popover shadow-lg z-50"
+                              >
+                                <div className="p-1">
+                                  <button
+                                    onClick={() => handleBreakdownTypeChange("languages")}
+                                    className={`w-full flex items-center gap-2 px-3 py-2 text-sm rounded-sm transition-colors ${breakdownType === "languages"
+                                      ? "bg-accent text-accent-foreground"
+                                      : "hover:bg-accent/50"
+                                      }`}
+                                  >
+                                    <FileText className="h-4 w-4" />
+                                    Language Breakdown
+                                  </button>
+                                  <button
+                                    onClick={() => handleBreakdownTypeChange("files")}
+                                    className={`w-full flex items-center gap-2 px-3 py-2 text-sm rounded-sm transition-colors ${breakdownType === "files"
+                                      ? "bg-accent text-accent-foreground"
+                                      : "hover:bg-accent/50"
+                                      }`}
+                                  >
+                                    <FileText className="h-4 w-4" />
+                                    File Breakdown
+                                  </button>
+                                  <button
+                                    onClick={() => handleBreakdownTypeChange("authors")}
+                                    className={`w-full flex items-center gap-2 px-3 py-2 text-sm rounded-sm transition-colors ${breakdownType === "authors"
+                                      ? "bg-accent text-accent-foreground"
+                                      : "hover:bg-accent/50"
+                                      }`}
+                                  >
+                                    <User className="h-4 w-4" />
+                                    Authors Breakdown
+                                  </button>
+                                </div>
+                              </motion.div>
+                            )}
+                          </AnimatePresence>
+
+                          <CardDescription className="mt-1">
+                            {breakdownType === "languages" && "Detailed statistics by programming language"}
+                            {breakdownType === "files" && "Breakdown by individual files"}
+                            {breakdownType === "authors" && "Contribution statistics by author"}
                           </CardDescription>
                         </div>
                         <ToggleGroup type="single" value={viewMode} onValueChange={(value) => value && setViewMode(value as "table" | "chart")}>
@@ -587,40 +792,115 @@ export default function Home() {
                             <Table>
                               <TableHeader>
                                 <TableRow>
-                                  <TableHead>Language</TableHead>
-                                  <TableHead className="text-right">Files</TableHead>
-                                  <TableHead className="text-right">Lines</TableHead>
-                                  <TableHead className="text-right">Code</TableHead>
-                                  <TableHead className="text-right">Comments</TableHead>
-                                  <TableHead className="text-right">Blanks</TableHead>
+                                  {breakdownType === "languages" && (
+                                    <>
+                                      <TableHead>Language</TableHead>
+                                      <TableHead className="text-right">Files</TableHead>
+                                      <TableHead className="text-right">Lines</TableHead>
+                                      <TableHead className="text-right">Code</TableHead>
+                                      <TableHead className="text-right">Comments</TableHead>
+                                      <TableHead className="text-right">Blanks</TableHead>
+                                    </>
+                                  )}
+                                  {breakdownType === "files" && (
+                                    <>
+                                      <TableHead>File Path</TableHead>
+                                      <TableHead>Language</TableHead>
+                                      <TableHead className="text-right">Lines</TableHead>
+                                      <TableHead className="text-right">Code</TableHead>
+                                      <TableHead className="text-right">Comments</TableHead>
+                                      <TableHead className="text-right">Blanks</TableHead>
+                                    </>
+                                  )}
+                                  {breakdownType === "authors" && (
+                                    <>
+                                      <TableHead>Author</TableHead>
+                                      <TableHead className="text-right">Files</TableHead>
+                                      <TableHead className="text-right">Lines</TableHead>
+                                      <TableHead className="text-right">Code</TableHead>
+                                      <TableHead className="text-right">%</TableHead>
+                                    </>
+                                  )}
                                 </TableRow>
                               </TableHeader>
                               <TableBody>
-                                {isLoadingLoc ? (
-                                  // Skeleton rows
-                                  Array.from({ length: 5 }).map((_, index) => (
-                                    <TableRow key={`skeleton-${index}`}>
-                                      <TableCell><Skeleton className="h-5 w-20" /></TableCell>
-                                      <TableCell className="text-right"><Skeleton className="h-4 w-12 ml-auto" /></TableCell>
-                                      <TableCell className="text-right"><Skeleton className="h-4 w-16 ml-auto" /></TableCell>
-                                      <TableCell className="text-right"><Skeleton className="h-4 w-16 ml-auto" /></TableCell>
-                                      <TableCell className="text-right"><Skeleton className="h-4 w-12 ml-auto" /></TableCell>
-                                      <TableCell className="text-right"><Skeleton className="h-4 w-12 ml-auto" /></TableCell>
-                                    </TableRow>
-                                  ))
-                                ) : (
-                                  languageData.map((item, index) => (
-                                    <TableRow key={index}>
-                                      <TableCell className="font-medium">
-                                        <Badge variant="secondary">{item.language}</Badge>
-                                      </TableCell>
-                                      <TableCell className="text-right">{item.files.toLocaleString()}</TableCell>
-                                      <TableCell className="text-right">{item.lines.toLocaleString()}</TableCell>
-                                      <TableCell className="text-right font-medium">{item.linesOfCode.toLocaleString()}</TableCell>
-                                      <TableCell className="text-right">{item.comments.toLocaleString()}</TableCell>
-                                      <TableCell className="text-right">{item.blanks.toLocaleString()}</TableCell>
-                                    </TableRow>
-                                  ))
+                                {breakdownType === "languages" && languageData?.map((item, index) => (
+                                  <TableRow key={index}>
+                                    <TableCell className="font-medium">
+                                      <Badge variant="secondary">{item.language}</Badge>
+                                    </TableCell>
+                                    <TableCell className="text-right">{item.fileCount.toLocaleString()}</TableCell>
+                                    <TableCell className="text-right">{item.totalLines.toLocaleString()}</TableCell>
+                                    <TableCell className="text-right font-medium">{item.codeLines.toLocaleString()}</TableCell>
+                                    <TableCell className="text-right">{item.commentLines.toLocaleString()}</TableCell>
+                                    <TableCell className="text-right">{item.blankLines.toLocaleString()}</TableCell>
+                                  </TableRow>
+                                ))}
+
+                                {breakdownType === "files" && analysisData?.files.map((file, index) => (
+                                  <TableRow key={index}>
+                                    <TableCell className="font-medium font-mono text-xs max-w-md truncate" title={file.path}>
+                                      {file.path}
+                                    </TableCell>
+                                    <TableCell>
+                                      <Badge variant="secondary" className="text-xs">{file.language}</Badge>
+                                    </TableCell>
+                                    <TableCell className="text-right">{file.totalLines.toLocaleString()}</TableCell>
+                                    <TableCell className="text-right font-medium">{file.codeLines.toLocaleString()}</TableCell>
+                                    <TableCell className="text-right">{file.commentLines.toLocaleString()}</TableCell>
+                                    <TableCell className="text-right">{file.blankLines.toLocaleString()}</TableCell>
+                                  </TableRow>
+                                ))}
+
+                                {breakdownType === "authors" && (
+                                  <>
+                                    {isLoadingAuthors ? (
+                                      // Skeleton rows while loading
+                                      Array.from({ length: 5 }).map((_, index) => (
+                                        <TableRow key={`skeleton-${index}`}>
+                                          <TableCell>
+                                            <div className="flex items-center gap-2">
+                                              <Skeleton className="h-6 w-6 rounded-full" />
+                                              <div className="space-y-1">
+                                                <Skeleton className="h-4 w-32" />
+                                                <Skeleton className="h-3 w-40" />
+                                              </div>
+                                            </div>
+                                          </TableCell>
+                                          <TableCell className="text-right"><Skeleton className="h-4 w-12 ml-auto" /></TableCell>
+                                          <TableCell className="text-right"><Skeleton className="h-4 w-16 ml-auto" /></TableCell>
+                                          <TableCell className="text-right"><Skeleton className="h-4 w-16 ml-auto" /></TableCell>
+                                          <TableCell className="text-right"><Skeleton className="h-4 w-12 ml-auto" /></TableCell>
+                                        </TableRow>
+                                      ))
+                                    ) : authorsData?.authors && Object.keys(authorsData.authors).length > 0 ? (
+                                      Object.values(authorsData.authors).map((author, index) => (
+                                        <TableRow key={index}>
+                                          <TableCell className="font-medium">
+                                            <div className="flex items-center gap-2">
+                                              {author.avatarUrl && (
+                                                <img src={author.avatarUrl} alt={author.name} className="h-6 w-6 rounded-full" />
+                                              )}
+                                              <div>
+                                                <div className="font-medium">{author.name}</div>
+                                                <div className="text-xs text-muted-foreground">{author.email}</div>
+                                              </div>
+                                            </div>
+                                          </TableCell>
+                                          <TableCell className="text-right">{author.fileCount.toLocaleString()}</TableCell>
+                                          <TableCell className="text-right">{author.totalLines.toLocaleString()}</TableCell>
+                                          <TableCell className="text-right font-medium">{author.codeLines.toLocaleString()}</TableCell>
+                                          <TableCell className="text-right">{author.percentage.toFixed(1)}%</TableCell>
+                                        </TableRow>
+                                      ))
+                                    ) : (
+                                      <TableRow>
+                                        <TableCell colSpan={5} className="text-center py-8 text-muted-foreground">
+                                          No author data available
+                                        </TableCell>
+                                      </TableRow>
+                                    )}
+                                  </>
                                 )}
                               </TableBody>
                             </Table>
@@ -634,19 +914,12 @@ export default function Home() {
                             transition={{ duration: 0.2 }}
                             className="flex items-center justify-center py-4"
                           >
-                            {isLoadingLoc ? (
-                              <div className="flex items-center justify-center h-[400px] w-full">
-                                <Skeleton className="h-[300px] w-[300px] rounded-full" />
-                              </div>
-                            ) : (
+                            {chartData && chartData.length > 0 ? (
                               <div className="h-[400px] w-full">
                                 <ResponsiveContainer width="100%" height="100%">
                                   <RechartsPieChart>
                                     <Pie
-                                      data={chartData?.map((item) => ({
-                                        name: item.language,
-                                        value: item.linesOfCode,
-                                      }))}
+                                      data={chartData}
                                       cx="50%"
                                       cy="50%"
                                       innerRadius={80}
@@ -656,7 +929,7 @@ export default function Home() {
                                       stroke="none"
                                       dataKey="value"
                                     >
-                                      {chartData?.map((entry, index) => {
+                                      {chartData.map((entry, index) => {
                                         const colors = [
                                           "#e95268", "#e95298", "#c952e9",
                                           "#7352e9", "#5268e9", "#52c9e9",
@@ -667,7 +940,7 @@ export default function Home() {
                                     <ChartTooltip
                                       content={({ active, payload }) => {
                                         if (active && payload && payload.length) {
-                                          const total = chartData?.reduce((sum, item) => sum + item.linesOfCode, 0) || 0;
+                                          const total = chartData.reduce((sum, item) => sum + item.value, 0);
                                           const percentage = ((payload[0].value as number / total) * 100).toFixed(1);
                                           return (
                                             <div className="rounded-lg border bg-background p-3 shadow-lg">
@@ -685,6 +958,17 @@ export default function Home() {
                                     />
                                   </RechartsPieChart>
                                 </ResponsiveContainer>
+                              </div>
+                            ) : (
+                              <div className="flex items-center justify-center h-[400px] text-muted-foreground">
+                                {breakdownType === "authors" && isLoadingAuthors ? (
+                                  <div className="flex flex-col items-center gap-2">
+                                    <Spinner className="h-8 w-8" />
+                                    <p className="text-sm">Loading author data...</p>
+                                  </div>
+                                ) : (
+                                  <p>No data available for chart</p>
+                                )}
                               </div>
                             )}
                           </motion.div>
@@ -716,15 +1000,7 @@ export default function Home() {
               <div className="flex-1 text-sm leading-snug">
                 <span className="font-bold text-foreground">Privacy & Data:</span>{" "}
                 <span className="text-muted-foreground">
-                  Anonymous usage data via PostHog. API by{" "}
-                  <a
-                    href="https://codetabs.com"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-[#e95268] hover:underline"
-                  >
-                    codetabs.com
-                  </a>.
+                  Anonymous usage data via PostHog. Repository files are not saved permanently, they exist only during analysis.
                 </span>
               </div>
 
