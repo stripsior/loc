@@ -14,6 +14,7 @@ import { Search, AlertCircle, Github, RotateCcw, Star, GitFork, ExternalLink, Ta
 import { useSession, signIn, signOut, getAccessToken } from "@/lib/auth-client";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { motion, AnimatePresence } from "motion/react";
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
 import { Pie, PieChart as RechartsPieChart, Cell, ResponsiveContainer } from "recharts";
@@ -185,6 +186,7 @@ export default function Home() {
   const [breakdownType, setBreakdownType] = useState<"languages" | "files" | "authors">("languages");
   const [showBreakdownDropdown, setShowBreakdownDropdown] = useState(false);
   const [showBanner, setShowBanner] = useState(false);
+  const [showRevokeModal, setShowRevokeModal] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   // Get session for authentication
@@ -503,7 +505,10 @@ export default function Home() {
                           <Button
                             variant="ghost"
                             size="icon"
-                            onClick={() => signOut()}
+                            onClick={async () => {
+                              await signOut();
+                              setShowRevokeModal(true);
+                            }}
                             title="Sign out"
                           >
                             <LogOut className="h-4 w-4" />
@@ -1046,6 +1051,40 @@ export default function Home() {
           </span>
         </div>
       </motion.a>
+
+      {/* Revoke Access Modal */}
+      <Dialog open={showRevokeModal} onOpenChange={setShowRevokeModal}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Revoke GitHub Access?</DialogTitle>
+            <DialogDescription>
+              You've successfully signed out. Would you like to revoke this app's access to your GitHub account?
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setShowRevokeModal(false)}
+            >
+              No, Keep Access
+            </Button>
+            <Button
+              variant="default"
+              asChild
+            >
+              <a
+                href="https://github.com/settings/connections/applications/Ov23liZSXPujYVQXCsfW"
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={() => setShowRevokeModal(false)}
+              >
+                <ExternalLink className="mr-2 h-4 w-4" />
+                Revoke Access
+              </a>
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
