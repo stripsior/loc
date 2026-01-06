@@ -144,16 +144,27 @@ async function analyzeRepository(
     if (response.status === 429) {
       throw new Error("Rate limit exceeded. Please try again in a few minutes.");
     }
+
+    let errorMessage = "Failed to analyze repository. Please check the repository URL and try again.";
+
     try {
       const errorData = await response.json();
-      const errorMessage = errorData.error || errorData.message;
-      if (errorMessage) throw new Error(errorMessage);
-    } catch (e) {
-      if (e instanceof Error && !e.message.includes("JSON")) {
-        throw e;
+
+      // Try to extract a meaningful error message
+      if (errorData.error && typeof errorData.error === 'string') {
+        errorMessage = errorData.error;
+      } else if (errorData.message && typeof errorData.message === 'string') {
+        errorMessage = errorData.message;
+      } else if (errorData.error && typeof errorData.error === 'object') {
+        // Handle case where error is an object with a message
+        errorMessage = errorData.error.message || errorMessage;
       }
-      throw new Error("Failed to fetch data. Please check the repository URL and try again.");
+    } catch (e) {
+      // If JSON parsing fails, use the default error message
+      console.error("Failed to parse error response:", e);
     }
+
+    throw new Error(errorMessage);
   }
 
   return response.json();
