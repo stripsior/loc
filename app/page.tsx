@@ -10,7 +10,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Badge } from "@/components/ui/badge";
 import { Spinner } from "@/components/ui/spinner";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Search, AlertCircle, Github, RotateCcw, Star, GitFork, ExternalLink, TableIcon, PieChart, Info, Key, ChevronDown, User, FileText, LogOut, LogIn, FileX, GitBranch } from "lucide-react";
+import { Search, AlertCircle, Github, RotateCcw, Star, GitFork, ExternalLink, TableIcon, PieChart, Info, Key, ChevronDown, User, FileText, LogOut, LogIn, FileX, GitBranch, Terminal, Copy, X } from "lucide-react";
 import { useSession, signIn, signOut, getAccessToken } from "@/lib/auth-client";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
@@ -187,6 +187,8 @@ export default function Home() {
   const [showBreakdownDropdown, setShowBreakdownDropdown] = useState(false);
   const [showBanner, setShowBanner] = useState(false);
   const [showRevokeModal, setShowRevokeModal] = useState(false);
+  const [showCliInfoForm, setShowCliInfoForm] = useState(true);
+  const [showCliCard, setShowCliCard] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   // Get session for authentication
@@ -196,6 +198,18 @@ export default function Home() {
     const bannerDismissed = localStorage.getItem("loc_banner_dismissed");
     if (!bannerDismissed) {
       setShowBanner(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    const cliInfoFormDismissed = localStorage.getItem("loc_cli_info_form_dismissed");
+    const cliCardDismissed = localStorage.getItem("loc_cli_card_dismissed");
+
+    if (cliInfoFormDismissed) {
+      setShowCliInfoForm(false);
+    }
+    if (!cliCardDismissed) {
+      setShowCliCard(true);
     }
   }, []);
 
@@ -217,6 +231,30 @@ export default function Home() {
     setShowBanner(false);
     localStorage.setItem("loc_banner_dismissed", "true");
   };
+
+  const dismissCliInfoForm = () => {
+    setShowCliInfoForm(false);
+    localStorage.setItem("loc_cli_info_form_dismissed", "true");
+    posthog.capture("cli_info_form_dismissed");
+  };
+
+  const dismissCliCard = () => {
+    setShowCliCard(false);
+    localStorage.setItem("loc_cli_card_dismissed", "true");
+    posthog.capture("cli_card_dismissed");
+  };
+
+  const handleCopyCliCommand = (command: string, location: string) => {
+    navigator.clipboard.writeText(command);
+    posthog.capture("cli_command_copied", { command, location });
+  };
+
+  const cliCommands = [
+    { manager: "npm", command: "npx codeloc ." },
+    { manager: "pnpm", command: "pnpm dlx codeloc ." },
+    { manager: "bun", command: "bunx codeloc ." },
+    { manager: "yarn", command: "yarn dlx codeloc ." },
+  ];
 
   const { data: analysisData, isLoading: isLoadingAnalysis, error: analysisError } = useQuery({
     queryKey: ['analyze', submittedParams?.repoUrl, submittedParams?.branch, submittedParams?.excludeExtensions, session?.user?.id],
@@ -573,6 +611,48 @@ export default function Home() {
                     </Button>
                   </form>
 
+                  {/* CLI Info Alert */}
+                  <AnimatePresence>
+                    {showCliInfoForm && (
+                      <motion.div
+                        initial={{ opacity: 0, height: 0 }}
+                        animate={{ opacity: 1, height: "auto" }}
+                        exit={{ opacity: 0, height: 0 }}
+                        transition={{ duration: 0.3 }}
+                        className="mt-4"
+                      >
+                        <Alert className="border-primary/20 bg-primary/5">
+                          <Terminal className="h-4 w-4 text-primary" />
+                          <AlertDescription className="flex items-center justify-between gap-3">
+                            <div className="flex items-center gap-2 flex-wrap flex-1">
+                              <span className="font-semibold text-foreground">Use the CLI:</span>
+                              <code className="text-xs bg-muted px-2 py-1 rounded font-mono">npx codeloc .</code>
+                              <span className="text-xs text-muted-foreground">No web required</span>
+                            </div>
+                            <div className="flex items-center gap-1 shrink-0">
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => handleCopyCliCommand("npx codeloc .", "form")}
+                                title="Copy command"
+                              >
+                                <Copy className="h-3 w-3" />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={dismissCliInfoForm}
+                                title="Dismiss"
+                              >
+                                <X className="h-3 w-3" />
+                              </Button>
+                            </div>
+                          </AlertDescription>
+                        </Alert>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+
                   {/* Error Alert */}
                   {analysisError && (
                     <motion.div
@@ -615,6 +695,73 @@ export default function Home() {
                   Check another repository
                 </Button>
               </motion.div>
+
+              {/* CLI Tool Card */}
+              <AnimatePresence>
+                {showCliCard && (
+                  <motion.div
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, scale: 0.95 }}
+                    transition={{ delay: 0.25 }}
+                  >
+                    <Card>
+                      <CardHeader>
+                        <div className="flex items-start justify-between gap-4">
+                          <div className="space-y-1">
+                            <CardTitle className="flex items-center gap-2">
+                              <Terminal className="h-5 w-5" />
+                              Analyze from Your Terminal
+                            </CardTitle>
+                            <CardDescription>
+                              Skip the web interface - use our CLI tool for instant analysis
+                            </CardDescription>
+                          </div>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={dismissCliCard}
+                            title="Dismiss"
+                          >
+                            <X className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      </CardHeader>
+                      <CardContent className="space-y-4">
+                        <div className="space-y-3">
+                          {cliCommands.map(({ manager, command }) => (
+                            <div
+                              key={manager}
+                              className="flex items-center justify-between gap-3 p-3 bg-muted/30 rounded-lg border border-border/50"
+                            >
+                              <div className="flex-1 min-w-0">
+                                <div className="text-xs text-muted-foreground mb-1 uppercase tracking-wide">
+                                  {manager}
+                                </div>
+                                <code className="text-sm font-mono text-foreground">
+                                  {command}
+                                </code>
+                              </div>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => handleCopyCliCommand(command, "results")}
+                                title="Copy command"
+                              >
+                                <Copy className="h-3.5 w-3.5 mr-1.5" />
+                                Copy
+                              </Button>
+                            </div>
+                          ))}
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                          Works with any local repository. No authentication needed.
+                        </p>
+                      </CardContent>
+                    </Card>
+                  </motion.div>
+                )}
+              </AnimatePresence>
 
               {/* Repository Metadata */}
               <motion.div
@@ -678,6 +825,89 @@ export default function Home() {
                         </select>
                       </div>
                     )}
+                  </CardContent>
+                </Card>
+              </motion.div>
+
+              {/* Stats Badge Card */}
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.25 }}
+              >
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2">
+                      <Info className="h-5 w-5" />
+                      Embed Stats Badge
+                    </CardTitle>
+                    <CardDescription>
+                      Add this badge to your README to display live repository statistics
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    {/* Badge Preview */}
+                    <div className="flex justify-center p-4 bg-muted/30 rounded-lg border">
+                      <img
+                        src={`/api/stats/${analysisData.repository.owner}/${analysisData.repository.name}${branch ? `?branch=${branch}` : ''}`}
+                        alt={`${analysisData.repository.fullName} stats`}
+                        className="max-w-full"
+                      />
+                    </div>
+
+                    {/* Markdown Code */}
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-sm font-medium">Markdown</span>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => {
+                            const baseUrl = typeof window !== 'undefined' ? window.location.origin : '';
+                            const badgeUrl = `${baseUrl}/api/stats/${analysisData.repository.owner}/${analysisData.repository.name}${branch ? `?branch=${branch}` : ''}`;
+                            const markdown = `![LOC Stats](${badgeUrl})`;
+                            navigator.clipboard.writeText(markdown);
+                            posthog.capture("badge_markdown_copied", {
+                              repo: analysisData.repository.fullName,
+                            });
+                          }}
+                        >
+                          Copy
+                        </Button>
+                      </div>
+                      <div className="relative">
+                        <pre className="p-3 bg-muted rounded-md text-xs overflow-x-auto">
+                          <code>{`![LOC Stats](${typeof window !== 'undefined' ? window.location.origin : ''}/api/stats/${analysisData.repository.owner}/${analysisData.repository.name}${branch ? `?branch=${branch}` : ''})`}</code>
+                        </pre>
+                      </div>
+                    </div>
+
+                    {/* HTML Code */}
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-sm font-medium">HTML</span>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => {
+                            const baseUrl = typeof window !== 'undefined' ? window.location.origin : '';
+                            const badgeUrl = `${baseUrl}/api/stats/${analysisData.repository.owner}/${analysisData.repository.name}${branch ? `?branch=${branch}` : ''}`;
+                            const html = `<img src="${badgeUrl}" alt="${analysisData.repository.fullName} Stats" />`;
+                            navigator.clipboard.writeText(html);
+                            posthog.capture("badge_html_copied", {
+                              repo: analysisData.repository.fullName,
+                            });
+                          }}
+                        >
+                          Copy
+                        </Button>
+                      </div>
+                      <div className="relative">
+                        <pre className="p-3 bg-muted rounded-md text-xs overflow-x-auto">
+                          <code>{`<img src="${typeof window !== 'undefined' ? window.location.origin : ''}/api/stats/${analysisData.repository.owner}/${analysisData.repository.name}${branch ? `?branch=${branch}` : ''}" alt="${analysisData.repository.fullName} Stats" />`}</code>
+                        </pre>
+                      </div>
+                    </div>
                   </CardContent>
                 </Card>
               </motion.div>
